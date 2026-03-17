@@ -1,0 +1,8 @@
+http_bind = "0.0.0.0:80"
+https_bind = "0.0.0.0:443"
+
+[upstream_http_proxy]
+enabled = false
+address = "127.0.0.1:3128"
+username = ""
+password = ""
