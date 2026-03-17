@@ -73,6 +73,7 @@ https://api.example.com
 ```toml
 http_bind = "0.0.0.0:80"
 https_bind = "0.0.0.0:443"
+client_ip_whitelist = ["192.168.1.*", "10.0.0.5"]
 
 [upstream_http_proxy]
 enabled = false
@@ -86,10 +87,53 @@ password = ""
 - `TRANS_PROXY_CONFIG`: 指定配置文件路径
 - `HTTP_BIND`: HTTP 监听地址
 - `HTTPS_BIND`: HTTPS 监听地址
+- `CLIENT_IP_WHITELIST`: 客户端 IP 白名单，多个值可用英文逗号或分号分隔
 - `UPSTREAM_HTTP_PROXY_ENABLED`: 是否启用上游 HTTP 代理，支持 `true/false/1/0/yes/no/on/off`
 - `UPSTREAM_HTTP_PROXY_ADDR`: 上游 HTTP 代理地址，例如 `127.0.0.1:3128`
 - `UPSTREAM_HTTP_PROXY_USERNAME`: 上游 HTTP 代理用户名
 - `UPSTREAM_HTTP_PROXY_PASSWORD`: 上游 HTTP 代理密码
+
+## 客户端 IP 白名单
+
+程序支持按客户端 IP 做白名单控制。
+
+### 行为
+
+- 白名单为空时，默认允许所有客户端
+- 白名单非空时，只有命中的客户端 IP 才允许继续转发
+- 未命中时会直接拒绝连接，不进入 HTTP 或 HTTPS 转发流程
+
+### 通配规则
+
+支持简单模糊匹配：
+
+- `*`: 匹配任意长度字符
+- `?`: 匹配单个字符
+
+常见示例：
+
+- `192.168.1.*`: 允许 `192.168.1.` 网段
+- `10.0.0.5`: 只允许单个 IP
+- `172.16.*`: 允许前缀匹配
+- `2001:db8::*`: 允许一段 IPv6 前缀
+
+### 配置文件示例
+
+```toml
+http_bind = "0.0.0.0:80"
+https_bind = "0.0.0.0:443"
+client_ip_whitelist = ["192.168.1.*", "10.0.0.5", "2001:db8::*"]
+
+[upstream_http_proxy]
+enabled = false
+address = "127.0.0.1:3128"
+```
+
+### 环境变量示例
+
+```powershell
+$env:CLIENT_IP_WHITELIST="192.168.1.*,10.0.0.5,2001:db8::*"
+```
 
 ## 上游 HTTP 代理模式
 
@@ -114,6 +158,7 @@ password = ""
 ```toml
 http_bind = "0.0.0.0:80"
 https_bind = "0.0.0.0:443"
+client_ip_whitelist = ["192.168.1.*", "10.0.0.5"]
 
 [upstream_http_proxy]
 enabled = true

@@ -1,3 +1,4 @@
+mod access;
 mod config;
 mod protocol;
 mod server;

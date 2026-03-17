@@ -1,5 +1,6 @@
 http_bind = "0.0.0.0:80"
 https_bind = "0.0.0.0:443"
+client_ip_whitelist = ["192.168.1.*", "10.0.0.5"]
 
 [upstream_http_proxy]
 enabled = false

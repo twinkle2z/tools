@@ -10,6 +10,8 @@ pub struct Config {
     #[serde(default = "default_https_bind")]
     pub https_bind: String,
     #[serde(default)]
+    pub client_ip_whitelist: Vec<String>,
+    #[serde(default)]
     pub upstream_http_proxy: UpstreamHttpProxyConfig,
 }
 
@@ -27,6 +29,7 @@ impl Default for Config {
         Self {
             http_bind: default_http_bind(),
             https_bind: default_https_bind(),
+            client_ip_whitelist: Vec::new(),
             upstream_http_proxy: UpstreamHttpProxyConfig::default(),
         }
     }
@@ -70,6 +73,14 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = env::var("HTTPS_BIND") {
         config.https_bind = value;
     }
+    if let Ok(value) = env::var("CLIENT_IP_WHITELIST") {
+        config.client_ip_whitelist = value
+            .split([',', ';'])
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
     if let Ok(value) = env::var("UPSTREAM_HTTP_PROXY_ENABLED") {
         if let Some(parsed) = parse_bool(&value) {
             config.upstream_http_proxy.enabled = parsed;
@@ -87,6 +98,11 @@ fn apply_env_overrides(config: &mut Config) {
 }
 
 fn normalize(config: &mut Config) {
+    config.client_ip_whitelist = config
+        .client_ip_whitelist
+        .drain(..)
+        .filter_map(|value| normalize_optional(Some(value)))
+        .collect();
     config.upstream_http_proxy.address = normalize_optional(config.upstream_http_proxy.address.take());
     config.upstream_http_proxy.username = normalize_optional(config.upstream_http_proxy.username.take());
     config.upstream_http_proxy.password = normalize_optional(config.upstream_http_proxy.password.take());

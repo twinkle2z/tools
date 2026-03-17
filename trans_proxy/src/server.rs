@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use tokio::{io::AsyncWriteExt, net::TcpListener, net::TcpStream};
 
 use crate::{
+    access::IpWhitelist,
     config::Config,
     protocol::{http, tls},
     upstream::{UpstreamProxy, bidirectional_copy},
@@ -17,11 +18,13 @@ enum ProxyMode {
 
 #[derive(Clone)]
 struct AppState {
+    ip_whitelist: IpWhitelist,
     upstream_proxy: Option<UpstreamProxy>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
     let state = AppState {
+        ip_whitelist: IpWhitelist::new(config.client_ip_whitelist.clone()),
         upstream_proxy: UpstreamProxy::from_config(&config.upstream_http_proxy)?,
     };
 
@@ -34,6 +37,11 @@ pub async fn run(config: Config) -> Result<()> {
 
     println!("transparent HTTP proxy listening on {}", config.http_bind);
     println!("transparent HTTPS proxy listening on {}", config.https_bind);
+    if state.ip_whitelist.patterns().is_empty() {
+        println!("client IP whitelist disabled");
+    } else {
+        println!("client IP whitelist enabled: {:?}", state.ip_whitelist.patterns());
+    }
     if let Some(proxy) = &state.upstream_proxy {
         println!("upstream HTTP proxy enabled: {}", proxy.address());
     } else {
@@ -76,6 +84,11 @@ async fn handle_connection(
     mode: ProxyMode,
     state: AppState,
 ) -> Result<()> {
+    if !state.ip_whitelist.is_allowed(peer_addr.ip()) {
+        eprintln!("[{mode:?}] denied client {}", peer_addr.ip());
+        return Ok(());
+    }
+
     match mode {
         ProxyMode::Http => handle_http(&mut inbound, peer_addr, &state).await,
         ProxyMode::Https => handle_https(&mut inbound, peer_addr, &state).await,
