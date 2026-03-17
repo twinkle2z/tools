@@ -1,5 +1,6 @@
 mod access;
 mod config;
+mod connection_log;
 mod protocol;
 mod server;
 mod upstream;

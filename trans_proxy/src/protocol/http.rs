@@ -27,7 +27,8 @@ pub async fn read_request_head(stream: &mut TcpStream) -> Result<Vec<u8>> {
 
 pub fn parse_host(head: &[u8]) -> Result<String> {
     let header_end = find_header_end(head)?;
-    let text = std::str::from_utf8(&head[..header_end]).context("http header is not valid utf-8")?;
+    let text =
+        std::str::from_utf8(&head[..header_end]).context("http header is not valid utf-8")?;
 
     for line in text.lines() {
         if let Some((name, value)) = line.split_once(':')
@@ -51,15 +52,22 @@ pub fn rewrite_request_for_upstream_proxy(
     proxy_authorization: Option<&str>,
 ) -> Result<Vec<u8>> {
     let header_end = find_header_end(head)?;
-    let head_text = std::str::from_utf8(&head[..header_end]).context("http header is not valid utf-8")?;
+    let head_text =
+        std::str::from_utf8(&head[..header_end]).context("http header is not valid utf-8")?;
     let body_prefix = &head[header_end + 4..];
     let mut lines = head_text.split("\r\n");
 
-    let request_line = lines.next().ok_or_else(|| anyhow!("missing http request line"))?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| anyhow!("missing http request line"))?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().ok_or_else(|| anyhow!("missing http method"))?;
-    let path = parts.next().ok_or_else(|| anyhow!("missing http request target"))?;
-    let version = parts.next().ok_or_else(|| anyhow!("missing http version"))?;
+    let path = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing http request target"))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing http version"))?;
 
     let absolute_target = if path.starts_with("http://") || path.starts_with("https://") {
         path.to_string()
@@ -92,9 +100,7 @@ pub fn rewrite_request_for_upstream_proxy(
         output.push_str("\r\n");
     }
 
-    if !has_proxy_authorization
-        && let Some(value) = proxy_authorization
-    {
+    if !has_proxy_authorization && let Some(value) = proxy_authorization {
         output.push_str("Proxy-Authorization: ");
         output.push_str(value);
         output.push_str("\r\n");

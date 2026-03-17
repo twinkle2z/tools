@@ -103,9 +103,12 @@ fn normalize(config: &mut Config) {
         .drain(..)
         .filter_map(|value| normalize_optional(Some(value)))
         .collect();
-    config.upstream_http_proxy.address = normalize_optional(config.upstream_http_proxy.address.take());
-    config.upstream_http_proxy.username = normalize_optional(config.upstream_http_proxy.username.take());
-    config.upstream_http_proxy.password = normalize_optional(config.upstream_http_proxy.password.take());
+    config.upstream_http_proxy.address =
+        normalize_optional(config.upstream_http_proxy.address.take());
+    config.upstream_http_proxy.username =
+        normalize_optional(config.upstream_http_proxy.username.take());
+    config.upstream_http_proxy.password =
+        normalize_optional(config.upstream_http_proxy.password.take());
 }
 
 fn normalize_optional(value: Option<String>) -> Option<String> {

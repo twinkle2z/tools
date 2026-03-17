@@ -118,7 +118,9 @@ fn parse_sni_extension(ext: &[u8]) -> Result<String> {
         cursor += name_len;
     }
 
-    Err(anyhow!("server name extension does not contain a host_name entry"))
+    Err(anyhow!(
+        "server name extension does not contain a host_name entry"
+    ))
 }
 
 fn read_u8(data: &[u8], cursor: &mut usize) -> Result<u8> {
@@ -142,8 +144,9 @@ fn read_u24(data: &[u8], cursor: &mut usize) -> Result<u32> {
     if *cursor + 3 > data.len() {
         bail!("unexpected eof while reading u24");
     }
-    let value =
-        ((data[*cursor] as u32) << 16) | ((data[*cursor + 1] as u32) << 8) | data[*cursor + 2] as u32;
+    let value = ((data[*cursor] as u32) << 16)
+        | ((data[*cursor + 1] as u32) << 8)
+        | data[*cursor + 2] as u32;
     *cursor += 3;
     Ok(value)
 }

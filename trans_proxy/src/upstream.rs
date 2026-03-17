@@ -1,7 +1,19 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context as TaskContext, Poll},
+};
+
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{
+        AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, copy_bidirectional_with_sizes,
+    },
     net::TcpStream,
 };
 
@@ -101,15 +113,20 @@ async fn read_http_response_head(stream: &mut TcpStream) -> Result<Vec<u8>> {
 }
 
 fn ensure_connect_success(response: &[u8]) -> Result<()> {
-    let text = std::str::from_utf8(response).context("upstream CONNECT response is not valid utf-8")?;
+    let text =
+        std::str::from_utf8(response).context("upstream CONNECT response is not valid utf-8")?;
     let status_line = text
         .lines()
         .next()
         .ok_or_else(|| anyhow!("upstream CONNECT response is empty"))?;
 
     let mut parts = status_line.split_whitespace();
-    let _http_version = parts.next().ok_or_else(|| anyhow!("missing CONNECT response version"))?;
-    let status_code = parts.next().ok_or_else(|| anyhow!("missing CONNECT response status code"))?;
+    let _http_version = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing CONNECT response version"))?;
+    let status_code = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing CONNECT response status code"))?;
     if !status_code.starts_with('2') {
         bail!("upstream CONNECT failed with status line: {status_line}");
     }
@@ -117,12 +134,97 @@ fn ensure_connect_success(response: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub async fn bidirectional_copy(inbound: &mut TcpStream, outbound: &mut TcpStream) -> Result<()> {
-    let _ = io::copy_bidirectional(inbound, outbound).await?;
+pub async fn bidirectional_copy(
+    inbound: &mut TcpStream,
+    outbound: &mut TcpStream,
+    uploaded: Arc<AtomicU64>,
+    downloaded: Arc<AtomicU64>,
+) -> Result<()> {
+    const COPY_BUF_SIZE: usize = 16 * 1024;
+
+    let mut inbound = CountedStream::new(inbound, downloaded);
+    let mut outbound = CountedStream::new(outbound, uploaded);
+
+    let _ =
+        copy_bidirectional_with_sizes(&mut inbound, &mut outbound, COPY_BUF_SIZE, COPY_BUF_SIZE)
+            .await?;
     Ok(())
 }
 
 fn connect_authority(host: &str, port: u16) -> String {
     let host = format_authority(host, port, port);
     format!("{host}:{port}")
+}
+
+struct CountedStream<'a> {
+    inner: &'a mut TcpStream,
+    write_counter: Arc<AtomicU64>,
+}
+
+impl<'a> CountedStream<'a> {
+    fn new(inner: &'a mut TcpStream, write_counter: Arc<AtomicU64>) -> Self {
+        Self {
+            inner,
+            write_counter,
+        }
+    }
+}
+
+impl AsyncRead for CountedStream<'_> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for CountedStream<'_> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        match Pin::new(&mut *this.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(written)) => {
+                this.write_counter
+                    .fetch_add(written as u64, Ordering::Relaxed);
+                Poll::Ready(Ok(written))
+            }
+            other => other,
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut *this.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        match Pin::new(&mut *this.inner).poll_write_vectored(cx, bufs) {
+            Poll::Ready(Ok(written)) => {
+                this.write_counter
+                    .fetch_add(written as u64, Ordering::Relaxed);
+                Poll::Ready(Ok(written))
+            }
+            other => other,
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
 }

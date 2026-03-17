@@ -1,4 +1,10 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use anyhow::{Context, Result};
 use tokio::{io::AsyncWriteExt, net::TcpListener, net::TcpStream};
@@ -6,6 +12,7 @@ use tokio::{io::AsyncWriteExt, net::TcpListener, net::TcpStream};
 use crate::{
     access::IpWhitelist,
     config::Config,
+    connection_log::ConnectionLog,
     protocol::{http, tls},
     upstream::{UpstreamProxy, bidirectional_copy},
 };
@@ -20,12 +27,14 @@ enum ProxyMode {
 struct AppState {
     ip_whitelist: IpWhitelist,
     upstream_proxy: Option<UpstreamProxy>,
+    connection_log: ConnectionLog,
 }
 
 pub async fn run(config: Config) -> Result<()> {
     let state = AppState {
         ip_whitelist: IpWhitelist::new(config.client_ip_whitelist.clone()),
         upstream_proxy: UpstreamProxy::from_config(&config.upstream_http_proxy)?,
+        connection_log: ConnectionLog::default(),
     };
 
     let http_listener = TcpListener::bind(&config.http_bind)
@@ -40,7 +49,10 @@ pub async fn run(config: Config) -> Result<()> {
     if state.ip_whitelist.patterns().is_empty() {
         println!("client IP whitelist disabled");
     } else {
-        println!("client IP whitelist enabled: {:?}", state.ip_whitelist.patterns());
+        println!(
+            "client IP whitelist enabled: {:?}",
+            state.ip_whitelist.patterns()
+        );
     }
     if let Some(proxy) = &state.upstream_proxy {
         println!("upstream HTTP proxy enabled: {}", proxy.address());
@@ -71,8 +83,9 @@ async fn accept_loop(listener: TcpListener, mode: ProxyMode, state: AppState) ->
         let (stream, peer_addr) = listener.accept().await?;
         let state = state.clone();
         tokio::spawn(async move {
+            let connection_log = state.connection_log.clone();
             if let Err(err) = handle_connection(stream, peer_addr, mode, state).await {
-                eprintln!("[{mode:?}] {peer_addr} failed: {err:#}");
+                connection_log.print_message(&format!("[{mode:?}] {peer_addr} failed: {err:#}"));
             }
         });
     }
@@ -85,7 +98,9 @@ async fn handle_connection(
     state: AppState,
 ) -> Result<()> {
     if !state.ip_whitelist.is_allowed(peer_addr.ip()) {
-        eprintln!("[{mode:?}] denied client {}", peer_addr.ip());
+        state
+            .connection_log
+            .print_message(&format!("[{mode:?}] denied client {}", peer_addr.ip()));
         return Ok(());
     }
 
@@ -95,13 +110,22 @@ async fn handle_connection(
     }
 }
 
-async fn handle_http(inbound: &mut TcpStream, peer_addr: SocketAddr, state: &AppState) -> Result<()> {
+async fn handle_http(
+    inbound: &mut TcpStream,
+    peer_addr: SocketAddr,
+    state: &AppState,
+) -> Result<()> {
     let request_head = http::read_request_head(inbound).await?;
     let host_header = http::parse_host(&request_head)?;
     let (host, port) = http::split_host_port(&host_header, 80)?;
     let target = format!("{host}:{port}");
-
-    println!("[Http] {peer_addr} -> {target}");
+    let uploaded = Arc::new(AtomicU64::new(request_head.len() as u64));
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let log = state.connection_log.start(
+        format!("[Http] {peer_addr} -> {target}"),
+        uploaded.clone(),
+        downloaded.clone(),
+    );
 
     let mut outbound = if let Some(proxy) = &state.upstream_proxy {
         let mut stream = proxy.connect_plain().await?;
@@ -111,10 +135,9 @@ async fn handle_http(inbound: &mut TcpStream, peer_addr: SocketAddr, state: &App
             port,
             proxy.authorization_header(),
         )?;
-        stream
-            .write_all(&rewritten)
-            .await
-            .with_context(|| format!("failed to write proxied HTTP request to upstream for {target}"))?;
+        stream.write_all(&rewritten).await.with_context(|| {
+            format!("failed to write proxied HTTP request to upstream for {target}")
+        })?;
         stream
     } else {
         let mut stream = TcpStream::connect(&target)
@@ -127,18 +150,31 @@ async fn handle_http(inbound: &mut TcpStream, peer_addr: SocketAddr, state: &App
         stream
     };
 
-    bidirectional_copy(inbound, &mut outbound)
+    let result = bidirectional_copy(inbound, &mut outbound, uploaded.clone(), downloaded.clone())
         .await
-        .with_context(|| format!("failed while proxying {peer_addr} <-> {target}"))?;
-    Ok(())
+        .with_context(|| format!("failed while proxying {peer_addr} <-> {target}"));
+    log.close(
+        uploaded.load(Ordering::Relaxed),
+        downloaded.load(Ordering::Relaxed),
+    );
+    result
 }
 
-async fn handle_https(inbound: &mut TcpStream, peer_addr: SocketAddr, state: &AppState) -> Result<()> {
+async fn handle_https(
+    inbound: &mut TcpStream,
+    peer_addr: SocketAddr,
+    state: &AppState,
+) -> Result<()> {
     let client_hello = tls::read_client_hello(inbound).await?;
     let host = tls::parse_sni(&client_hello)?;
     let target = format!("{host}:443");
-
-    println!("[Https] {peer_addr} -> {target}");
+    let uploaded = Arc::new(AtomicU64::new(client_hello.len() as u64));
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let log = state.connection_log.start(
+        format!("[Https] {peer_addr} -> {target}"),
+        uploaded.clone(),
+        downloaded.clone(),
+    );
 
     let mut outbound = if let Some(proxy) = &state.upstream_proxy {
         proxy.connect_tunnel(&host, 443).await?
@@ -153,8 +189,12 @@ async fn handle_https(inbound: &mut TcpStream, peer_addr: SocketAddr, state: &Ap
         .await
         .with_context(|| format!("failed to write buffered tls client hello to {target}"))?;
 
-    bidirectional_copy(inbound, &mut outbound)
+    let result = bidirectional_copy(inbound, &mut outbound, uploaded.clone(), downloaded.clone())
         .await
-        .with_context(|| format!("failed while proxying {peer_addr} <-> {target}"))?;
-    Ok(())
+        .with_context(|| format!("failed while proxying {peer_addr} <-> {target}"));
+    log.close(
+        uploaded.load(Ordering::Relaxed),
+        downloaded.load(Ordering::Relaxed),
+    );
+    result
 }
